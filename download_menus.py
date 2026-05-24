@@ -181,6 +181,41 @@ def process_menus(raw_response, restaurant_guid, fetched_at, toast_last_modified
     mod_group_refs = raw_response.get("modifierGroupReferences", {})
     mod_option_refs = raw_response.get("modifierOptionReferences", {})
 
+    def process_item(item):
+        return {
+            "name": item.get("name", ""),
+            "guid": item.get("guid", ""),
+            "description": item.get("description", ""),
+            "price": item.get("price"),
+            "price_display": format_price(item.get("price")),
+            "calories": item.get("calories"),
+            "image": item.get("image"),
+            "visibility": item.get("visibility", []),
+            "modifiers": resolve_modifiers(item, mod_group_refs, mod_option_refs),
+        }
+
+    def process_group(group, name_prefix=""):
+        """Flatten a group and any nested subgroups into processed sections.
+
+        A group's direct items become one section named by its (prefixed) name;
+        each nested subgroup recurses with the parent name prefixed, e.g.
+        "Spirits — Whisk(e)y". Toast nests some groups (e.g. Spirits) this way and
+        gives the parent no direct items, so without recursion they'd be dropped.
+        """
+        full_name = f"{name_prefix}{group.get('name', '')}"
+        results = []
+        items = [process_item(i) for i in group.get("menuItems", [])]
+        if items:
+            results.append({
+                "name": full_name,
+                "guid": group.get("guid", ""),
+                "description": group.get("description", ""),
+                "items": items,
+            })
+        for sub in group.get("menuGroups", []):
+            results.extend(process_group(sub, name_prefix=f"{full_name} — "))
+        return results
+
     menus = []
     for menu in raw_menus:
         processed_menu = {
@@ -193,31 +228,7 @@ def process_menus(raw_response, restaurant_guid, fetched_at, toast_last_modified
         }
 
         for group in menu.get("menuGroups", []):
-            processed_group = {
-                "name": group.get("name", ""),
-                "guid": group.get("guid", ""),
-                "description": group.get("description", ""),
-                "items": [],
-            }
-
-            for item in group.get("menuItems", []):
-                processed_item = {
-                    "name": item.get("name", ""),
-                    "guid": item.get("guid", ""),
-                    "description": item.get("description", ""),
-                    "price": item.get("price"),
-                    "price_display": format_price(item.get("price")),
-                    "calories": item.get("calories"),
-                    "image": item.get("image"),
-                    "visibility": item.get("visibility", []),
-                    "modifiers": resolve_modifiers(
-                        item, mod_group_refs, mod_option_refs
-                    ),
-                }
-                processed_group["items"].append(processed_item)
-
-            if processed_group["items"]:
-                processed_menu["groups"].append(processed_group)
+            processed_menu["groups"].extend(process_group(group))
 
         if processed_menu["groups"]:
             menus.append(processed_menu)
