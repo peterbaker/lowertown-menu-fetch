@@ -310,6 +310,7 @@ def build_bar_menu(consumer_data, out_of_stock_guids=None):
             "description": item.get("description", ""),
             "price": item["price"],
             "price_display": item["price_display"],
+            "image": item.get("image"),
         }
 
     def is_available(item):
@@ -366,6 +367,7 @@ def build_cafe_menu(consumer_data, out_of_stock_guids=None):
             "description": item.get("description", ""),
             "price": item["price"],
             "price_display": item["price_display"],
+            "image": item.get("image"),
         }
 
     def is_available(item):
