@@ -353,7 +353,7 @@ def build_bar_menu(consumer_data, out_of_stock_guids=None):
     return bar_menu
 
 
-CAFE_MENU_GROUPS = {"Coffee", "Tea", "Non-Alcoholic/Kombucha", "Beverages", "Coffee Beans"}
+CAFE_MENU_GROUPS = {"Coffee", "Tea", "Non-Alcoholic/Kombucha", "Beverages", "Coffee Beans", "Cocktails"}
 
 
 def build_cafe_menu(consumer_data, out_of_stock_guids=None):
@@ -441,6 +441,24 @@ def _load_json_safe(path):
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
+
+
+def count_consumer_items(consumer_data):
+    """Total item count across all menus/groups in consumer JSON."""
+    if not consumer_data:
+        return 0
+    return sum(
+        len(g.get("items", []))
+        for m in consumer_data.get("menus", [])
+        for g in m.get("groups", [])
+    )
+
+
+def count_section_items(sectioned_menu):
+    """Total item count across a bar/cafe sectioned menu."""
+    if not sectioned_menu:
+        return 0
+    return sum(len(s.get("items", [])) for s in sectioned_menu.get("sections", []))
 
 
 def _summarize_event(event):
@@ -588,6 +606,19 @@ def cmd_fetch(hostname, client_id, client_secret, restaurant_guid, force=False):
         # Process for consumers
         consumer_data = process_menus(raw_menus, restaurant_guid, fetched_at,
                                       toast_last_modified)
+
+        # Guard: a Toast outage or auth downgrade can return HTTP 200 with no
+        # usable menus. Keeping the previous snapshot means the displays show
+        # a stale-but-real menu instead of a blank one.
+        if count_consumer_items(consumer_data) == 0:
+            old_data = _load_json_safe(CURRENT_DIR / "menus.json")
+            if count_consumer_items(old_data) > 0:
+                append_log("error", toast_last_modified=toast_last_modified,
+                           error="Fetched menu has 0 items; kept previous menus.json")
+                print(f"Fetched menu has 0 items — refusing to overwrite previous "
+                      f"menus.json (raw snapshot kept at {raw_path})", file=sys.stderr)
+                sys.exit(1)
+
         atomic_write(CURRENT_DIR / "menus.json", json.dumps(consumer_data, indent=2))
 
         # Generate markdown
@@ -611,15 +642,27 @@ def cmd_fetch(hostname, client_id, client_secret, restaurant_guid, force=False):
     old_bar  = _load_json_safe(CURRENT_DIR / "bar_menu.json")
     old_cafe = _load_json_safe(CURRENT_DIR / "cafe_menu.json")
 
-    bar_menu = build_bar_menu(consumer_data, out_of_stock)
-    atomic_write(CURRENT_DIR / "bar_menu.json", json.dumps(bar_menu, indent=2))
-    atomic_write(CURRENT_DIR / "bar_menu.md",
-                 generate_sectioned_markdown("Lowertown Bar Menu", bar_menu))
+    def write_profile(name, title, new_menu, old_menu):
+        """Write {name}_menu.json/.md unless the rebuild came out empty while
+        the previous version had items — a renamed Toast menu/section would
+        otherwise silently blank the displays. Returns (menu on disk, kept_old)."""
+        if count_section_items(new_menu) == 0 and count_section_items(old_menu) > 0:
+            append_log("error", toast_last_modified=toast_last_modified,
+                       error=f"Rebuilt {name} menu is empty; kept previous {name}_menu.json")
+            print(f"Rebuilt {name} menu is empty (renamed Toast menu/section?) — "
+                  f"keeping previous {name}_menu.json", file=sys.stderr)
+            return old_menu, True
+        atomic_write(CURRENT_DIR / f"{name}_menu.json", json.dumps(new_menu, indent=2))
+        atomic_write(CURRENT_DIR / f"{name}_menu.md",
+                     generate_sectioned_markdown(title, new_menu))
+        return new_menu, False
 
-    cafe_menu = build_cafe_menu(consumer_data, out_of_stock)
-    atomic_write(CURRENT_DIR / "cafe_menu.json", json.dumps(cafe_menu, indent=2))
-    atomic_write(CURRENT_DIR / "cafe_menu.md",
-                 generate_sectioned_markdown("Lowertown Cafe Menu", cafe_menu))
+    bar_menu, bar_kept = write_profile(
+        "bar", "Lowertown Bar Menu",
+        build_bar_menu(consumer_data, out_of_stock), old_bar)
+    cafe_menu, cafe_kept = write_profile(
+        "cafe", "Lowertown Cafe Menu",
+        build_cafe_menu(consumer_data, out_of_stock), old_cafe)
 
     # Change tracking — diff new vs previous consumer menus, append to changes log
     try:
@@ -639,17 +682,17 @@ def cmd_fetch(hostname, client_id, client_secret, restaurant_guid, force=False):
     except Exception as e:
         print(f"  (change tracking failed: {e})", file=sys.stderr)
 
+    # A tripped guard means this run served stale data — fail loudly so the
+    # scheduler and logs record it, even though the kept files are usable.
+    if bar_kept or cafe_kept:
+        sys.exit(1)
+
     if menu_changed:
         # Prune old raw snapshots (only touched when we wrote a new one)
         prune_raw_snapshots()
 
         menu_count = len(consumer_data["menus"])
-        item_count = sum(
-            len(item)
-            for m in consumer_data["menus"]
-            for g in m["groups"]
-            for item in [g["items"]]
-        )
+        item_count = count_consumer_items(consumer_data)
         append_log("changed", toast_last_modified=toast_last_modified)
         print(f"Menus downloaded: {menu_count} menus, {item_count} items.")
         print(f"  Raw snapshot: {raw_path}")
