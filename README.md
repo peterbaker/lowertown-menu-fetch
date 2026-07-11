@@ -1,4 +1,6 @@
-# Lowertown Menu Download
+# Menu Feed
+
+*The live Toast menu feed; canonical menu data other services (wall display, website) read*  ·  `menu-fetch`
 
 Automated menu downloader for Lowertown Bar & Cafe using the Toast POS Menus API V2. Polls for changes 4x/day via macOS launchd, writing menu data in three formats:
 
